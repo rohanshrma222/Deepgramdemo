@@ -1,6 +1,13 @@
 # This .gitignore file is configured for Unity projects.
 # Recommended: https://github.com/github/gitignore/blob/main/Unity.gitignore
 
+# Environment files containing secrets
+.env
+.env.local
+.env.*
+.env.meta
+.env.*.meta
+
 /[Ll]ibrary/
 /[Tt]emp/
 /[Oo]bj/

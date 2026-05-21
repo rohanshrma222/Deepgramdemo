@@ -12,11 +12,11 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: a1c3d5e7f9b24a6c8d0e1f23456789ab, type: 3}
   m_Name: ApiConfig
   m_EditorClassIdentifier: 
-  deepgramApiKey: cf2d308b7181a01f745d64fce60a0467c516f292
+  deepgramApiKeyFallback: 
   deepgramSTTModel: nova-3-general
   deepgramSTTLanguage: de
   deepgramTTSModel: aura-2-lara-de
   englishTTSModel: aura-asteria-en
   germanTTSModel: aura-2-lara-de
-  geminiApiKey: AIzaSyDZxCAZjiIhVNMKNwXPjF89vycyTFYN9fM
+  geminiApiKeyFallback: 
   geminiModel: gemini-2.5-flash
