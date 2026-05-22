@@ -14,13 +14,42 @@ using UnityEngine.Networking;
 public class DeepgramSTT : MonoBehaviour
 {
     private const string DeepgramListenUrl = "wss://api.deepgram.com/v1/listen";
+    private const string DeepgramAuthTokenUrl = "https://api.deepgram.com/v1/auth/token";
     private const int TargetSampleRate = 16000;
     private const int TargetChannels = 1;
-    private const int EndpointingMs = 1200;
-    private const int UtteranceEndMs = 1800;
-    private const float SilenceThreshold = 0.0125f;
-    private const float SilenceFinalizeSeconds = 1.8f;
+    private const int EndpointingMs = 1800;
+    private const int UtteranceEndMs = 2200;
+    private const float SilenceThreshold = 0.010f;
+    private const float SilenceFinalizeSeconds = 2.3f;
     private const float WebSocketFinalizeTimeoutSeconds = 12f;
+    private static readonly string[] DeepgramKeyterms =
+    {
+        "tell me something about starfish",
+        "tell me something about sea stars",
+        "tell me something about seahorses",
+        "tell me something about",
+        "tell me about",
+        "something about",
+        "starfish",
+        "sea stars",
+        "seahorses",
+        "coral reefs",
+        "jellyfish",
+        "octopus",
+        "cephalopods",
+        "mollusks",
+        "arthropods",
+        "echinoderms",
+        "cnidarians",
+        "plankton",
+        "bioluminescence",
+        "crustaceans",
+        "dolphins",
+        "whales",
+        "sharks",
+        "marine biology",
+        "ocean ecosystems"
+    };
 
     [SerializeField] private ApiConfig apiConfig;
 
@@ -59,6 +88,31 @@ public class DeepgramSTT : MonoBehaviour
             yield break;
         }
 
+        string apiKey = apiConfig.deepgramApiKey;
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            HasError = true;
+            LastError = "Deepgram API key is missing. Set DEEPGRAM_API_KEY in .env or ApiConfig.";
+            Debug.LogError(LastError);
+            yield break;
+        }
+
+        using (UnityWebRequest authRequest = UnityWebRequest.Get(DeepgramAuthTokenUrl))
+        {
+            authRequest.SetRequestHeader("Authorization", $"Token {apiKey}");
+            yield return authRequest.SendWebRequest();
+
+            if (authRequest.result != UnityWebRequest.Result.Success)
+            {
+                HasError = true;
+                LastError = authRequest.responseCode == 401
+                    ? "Deepgram API key was rejected. Create a new Deepgram API key in the Deepgram Console and update DEEPGRAM_API_KEY."
+                    : $"Deepgram auth check failed ({authRequest.responseCode}): {authRequest.error}";
+                Debug.LogError(LastError);
+                yield break;
+            }
+        }
+
         if (Microphone.devices == null || Microphone.devices.Length == 0)
         {
             HasError = true;
@@ -80,33 +134,36 @@ public class DeepgramSTT : MonoBehaviour
         }
 
         microphoneDevice = Microphone.devices.First();
+        int microphoneSampleRate = GetMicrophoneSampleRate(microphoneDevice);
         int bufferLengthSeconds = Mathf.CeilToInt(Mathf.Max(recordingDuration, 2f)) + 2;
-        AudioClip clip = Microphone.Start(microphoneDevice, true, bufferLengthSeconds, TargetSampleRate);
-
-        if (clip == null)
-        {
-            HasError = true;
-            LastError = "Failed to start microphone recording.";
-            Debug.LogError(LastError);
-            yield break;
-        }
-
-        while (Microphone.GetPosition(microphoneDevice) <= 0)
-        {
-            yield return null;
-        }
-
         var audioChunks = new ConcurrentQueue<byte[]>();
         var audioSignal = new SemaphoreSlim(0);
         bool audioFinished = false;
         CancellationTokenSource cts = new CancellationTokenSource();
         Task<string> transcribeTask;
+        AudioClip clip = null;
 
         try
         {
-            transcribeTask = TranscribeStreamAsync(audioChunks, audioSignal, () => audioFinished, cts.Token);
+            transcribeTask = TranscribeStreamAsync(apiKey, audioChunks, audioSignal, () => audioFinished, cts.Token);
 
-            int lastPosition = Microphone.GetPosition(microphoneDevice);
+            clip = Microphone.Start(microphoneDevice, true, bufferLengthSeconds, microphoneSampleRate);
+
+            if (clip == null)
+            {
+                cts.Cancel();
+                HasError = true;
+                LastError = "Failed to start microphone recording.";
+                Debug.LogError(LastError);
+                yield break;
+            }
+
+            while (Microphone.GetPosition(microphoneDevice) <= 0)
+            {
+                yield return null;
+            }
+
+            int lastPosition = 0;
             float startTime = Time.unscaledTime;
             float lastVoiceTime = startTime;
             bool speechDetected = false;
@@ -123,14 +180,14 @@ public class DeepgramSTT : MonoBehaviour
                 {
                     if (currentPosition > lastPosition)
                     {
-                        CaptureChunk(clip, lastPosition, currentPosition - lastPosition, audioChunks, audioSignal, ref speechDetected, ref lastVoiceTime);
+                        CaptureChunk(clip, lastPosition, currentPosition - lastPosition, microphoneSampleRate, audioChunks, audioSignal, ref speechDetected, ref lastVoiceTime);
                     }
                     else
                     {
-                        CaptureChunk(clip, lastPosition, clip.samples - lastPosition, audioChunks, audioSignal, ref speechDetected, ref lastVoiceTime);
+                        CaptureChunk(clip, lastPosition, clip.samples - lastPosition, microphoneSampleRate, audioChunks, audioSignal, ref speechDetected, ref lastVoiceTime);
                         if (currentPosition > 0)
                         {
-                            CaptureChunk(clip, 0, currentPosition, audioChunks, audioSignal, ref speechDetected, ref lastVoiceTime);
+                            CaptureChunk(clip, 0, currentPosition, microphoneSampleRate, audioChunks, audioSignal, ref speechDetected, ref lastVoiceTime);
                         }
                     }
 
@@ -146,6 +203,7 @@ public class DeepgramSTT : MonoBehaviour
             }
 
             Microphone.End(microphoneDevice);
+            clip = null;
             audioFinished = true;
             audioSignal.Release();
 
@@ -187,11 +245,16 @@ public class DeepgramSTT : MonoBehaviour
         }
         finally
         {
+            if (clip != null)
+            {
+                Microphone.End(microphoneDevice);
+            }
+
             cts.Dispose();
         }
     }
 
-    private void CaptureChunk(AudioClip clip, int startSample, int sampleCount, ConcurrentQueue<byte[]> audioChunks, SemaphoreSlim audioSignal, ref bool speechDetected, ref float lastVoiceTime)
+    private void CaptureChunk(AudioClip clip, int startSample, int sampleCount, int sourceSampleRate, ConcurrentQueue<byte[]> audioChunks, SemaphoreSlim audioSignal, ref bool speechDetected, ref float lastVoiceTime)
     {
         if (clip == null || sampleCount <= 0)
         {
@@ -200,7 +263,7 @@ public class DeepgramSTT : MonoBehaviour
 
         float[] samples = new float[sampleCount * clip.channels];
         clip.GetData(samples, startSample);
-        byte[] pcmBytes = AudioPcmUtility.ConvertFloatSamplesToPcm16(samples, sampleCount, clip.channels);
+        byte[] pcmBytes = AudioPcmUtility.ConvertFloatSamplesToPcm16(samples, sampleCount, clip.channels, sourceSampleRate, TargetSampleRate);
 
         if (pcmBytes.Length > 0)
         {
@@ -226,21 +289,36 @@ public class DeepgramSTT : MonoBehaviour
     }
 
     private async Task<string> TranscribeStreamAsync(
+        string apiKey,
         ConcurrentQueue<byte[]> audioChunks,
         SemaphoreSlim audioSignal,
         System.Func<bool> isAudioFinished,
         CancellationToken cancellationToken)
     {
         string model = string.IsNullOrWhiteSpace(apiConfig.deepgramSTTModel) ? "nova-3-general" : apiConfig.deepgramSTTModel;
-        string language = string.IsNullOrWhiteSpace(apiConfig.deepgramSTTLanguage) ? "de" : apiConfig.deepgramSTTLanguage;
+        string language = ApiConfig.NormalizeLanguageCode(apiConfig.deepgramSTTLanguage);
         string url = BuildDeepgramUrl(model, language);
+
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            throw new InvalidOperationException("Deepgram API key is missing.");
+        }
 
         using (ClientWebSocket websocket = new ClientWebSocket())
         {
             websocket.Options.KeepAliveInterval = TimeSpan.FromSeconds(10);
-            websocket.Options.SetRequestHeader("Authorization", $"Token {apiConfig.deepgramApiKey}");
+            websocket.Options.SetRequestHeader("Authorization", $"Token {apiKey}");
 
-            await websocket.ConnectAsync(new Uri(url), cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await websocket.ConnectAsync(new Uri(url), cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException(
+                    $"Failed to connect to Deepgram websocket for model '{model}' and language '{language}': {ex.Message}",
+                    ex);
+            }
 
             var transcriptTcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             CancellationTokenSource innerCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -441,8 +519,40 @@ public class DeepgramSTT : MonoBehaviour
     private static string BuildDeepgramUrl(string model, string language)
     {
         string safeModel = string.IsNullOrWhiteSpace(model) ? "nova-3-general" : model;
-        string safeLanguage = string.IsNullOrWhiteSpace(language) ? "de" : language;
-        return $"{DeepgramListenUrl}?model={UnityWebRequest.EscapeURL(safeModel)}&smart_format=true&encoding=linear16&sample_rate={TargetSampleRate}&channels={TargetChannels}&interim_results=true&endpointing={EndpointingMs}&utterance_end_ms={UtteranceEndMs}&vad_events=true&language={UnityWebRequest.EscapeURL(safeLanguage)}";
+        string safeLanguage = ApiConfig.NormalizeLanguageCode(language);
+        StringBuilder urlBuilder = new StringBuilder();
+        urlBuilder.Append($"{DeepgramListenUrl}?model={UnityWebRequest.EscapeURL(safeModel)}");
+        urlBuilder.Append($"&language={UnityWebRequest.EscapeURL(safeLanguage)}");
+        urlBuilder.Append("&smart_format=true");
+        urlBuilder.Append("&punctuate=true");
+        urlBuilder.Append("&utterances=true");
+        urlBuilder.Append($"&encoding=linear16&sample_rate={TargetSampleRate}&channels={TargetChannels}");
+        urlBuilder.Append($"&interim_results=true&endpointing={EndpointingMs}&utterance_end_ms={UtteranceEndMs}&vad_events=true");
+
+        for (int i = 0; i < DeepgramKeyterms.Length; i++)
+        {
+            urlBuilder.Append("&keyterm=");
+            urlBuilder.Append(UnityWebRequest.EscapeURL(DeepgramKeyterms[i]));
+        }
+
+        return urlBuilder.ToString();
+    }
+
+    private static int GetMicrophoneSampleRate(string deviceName)
+    {
+        Microphone.GetDeviceCaps(deviceName, out int minFrequency, out int maxFrequency);
+
+        if (maxFrequency > 0)
+        {
+            return maxFrequency;
+        }
+
+        if (minFrequency > 0)
+        {
+            return minFrequency;
+        }
+
+        return 48000;
     }
 
     private static string MergeTranscript(string existing, string incoming)

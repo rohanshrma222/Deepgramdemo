@@ -102,8 +102,8 @@ public class UIManager : MonoBehaviour
             englishButton.onClick.RemoveAllListeners();
             englishButton.onClick.AddListener(() =>
             {
-                agentManager.SetLanguage("en");
-                UpdateLanguageButtons("en");
+                agentManager.SetLanguage(ApiConfig.EnglishLanguageCode);
+                UpdateLanguageButtons(ApiConfig.EnglishLanguageCode);
             });
         }
 
@@ -112,8 +112,8 @@ public class UIManager : MonoBehaviour
             germanButton.onClick.RemoveAllListeners();
             germanButton.onClick.AddListener(() =>
             {
-                agentManager.SetLanguage("de");
-                UpdateLanguageButtons("de");
+                agentManager.SetLanguage(ApiConfig.GermanLanguageCode);
+                UpdateLanguageButtons(ApiConfig.GermanLanguageCode);
             });
         }
 
@@ -314,16 +314,16 @@ public class UIManager : MonoBehaviour
 
         englishButton.onClick.AddListener(() =>
         {
-            agentManager?.SetLanguage("en");
-            UpdateLanguageButtons("en");
+            agentManager?.SetLanguage(ApiConfig.EnglishLanguageCode);
+            UpdateLanguageButtons(ApiConfig.EnglishLanguageCode);
         });
         germanButton.onClick.AddListener(() =>
         {
-            agentManager?.SetLanguage("de");
-            UpdateLanguageButtons("de");
+            agentManager?.SetLanguage(ApiConfig.GermanLanguageCode);
+            UpdateLanguageButtons(ApiConfig.GermanLanguageCode);
         });
 
-        UpdateLanguageButtons("de");
+        UpdateLanguageButtons(agentManager != null ? agentManager.CurrentLanguageCode : ApiConfig.EnglishLanguageCode);
     }
 
     private void CreateStatusSection(Transform parent)
@@ -637,7 +637,7 @@ public class UIManager : MonoBehaviour
 
     private void UpdateLanguageButtons(string languageCode)
     {
-        bool englishSelected = languageCode == "en";
+        bool englishSelected = ApiConfig.NormalizeLanguageCode(languageCode) == ApiConfig.EnglishLanguageCode;
         SetLanguageButtonState(englishButton, englishSelected);
         SetLanguageButtonState(germanButton, !englishSelected);
     }

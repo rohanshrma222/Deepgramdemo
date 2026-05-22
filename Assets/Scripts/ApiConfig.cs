@@ -3,6 +3,9 @@ using UnityEngine;
 [CreateAssetMenu(fileName = "ApiConfig", menuName = "MarineAI/ApiConfig")]
 public class ApiConfig : ScriptableObject
 {
+    public const string EnglishLanguageCode = "en";
+    public const string GermanLanguageCode = "de";
+
     [Header("Deepgram")]
     [Tooltip("Fallback/Override API Key if not specified in .env file or Environment Variables")]
     [SerializeField] private string deepgramApiKeyFallback;
@@ -16,8 +19,8 @@ public class ApiConfig : ScriptableObject
         set { deepgramApiKeyFallback = value; }
     }
     public string deepgramSTTModel = "nova-3-general";
-    public string deepgramSTTLanguage = "de";
-    public string deepgramTTSModel = "aura-2-lara-de";
+    public string deepgramSTTLanguage = "en";
+    public string deepgramTTSModel = "aura-asteria-en";
     public string englishTTSModel = "aura-asteria-en";
     public string germanTTSModel = "aura-2-lara-de";
 
@@ -107,17 +110,26 @@ public class ApiConfig : ScriptableObject
 
     public void ApplyLanguage(string languageCode)
     {
-        string normalizedCode = string.IsNullOrWhiteSpace(languageCode) ? "de" : languageCode.Trim().ToLowerInvariant();
+        string normalizedCode = NormalizeLanguageCode(languageCode);
         deepgramSTTLanguage = normalizedCode;
 
-        if (normalizedCode == "en")
+        if (normalizedCode == EnglishLanguageCode)
         {
             deepgramTTSModel = englishTTSModel;
         }
-        else if (normalizedCode == "de")
+        else if (normalizedCode == GermanLanguageCode)
         {
             deepgramTTSModel = germanTTSModel;
         }
+    }
+
+    public static string NormalizeLanguageCode(string languageCode)
+    {
+        string normalizedCode = string.IsNullOrWhiteSpace(languageCode)
+            ? EnglishLanguageCode
+            : languageCode.Trim().ToLowerInvariant();
+
+        return normalizedCode == GermanLanguageCode ? GermanLanguageCode : EnglishLanguageCode;
     }
 }
 

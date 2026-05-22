@@ -14,9 +14,24 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   deepgramApiKeyFallback: 
   deepgramSTTModel: nova-3-general
-  deepgramSTTLanguage: de
-  deepgramTTSModel: aura-2-lara-de
+  deepgramSTTLanguage: en
+  deepgramTTSModel: aura-asteria-en
   englishTTSModel: aura-asteria-en
   germanTTSModel: aura-2-lara-de
   geminiApiKeyFallback: 
   geminiModel: gemini-2.5-flash
+  geminiSystemPrompt: 'You are Marina, an expert marine biology AI assistant.
+
+    You
+    specialize in ocean ecosystems, marine species, coral reefs,
+
+    deep-sea biology,
+    marine conservation, and oceanography.
+
+    Keep answers concise (2-4 sentences)
+    and engaging for a general audience.
+
+    If a question is not related to marine
+    biology or oceans, politely redirect
+
+    the user back to marine topics.'

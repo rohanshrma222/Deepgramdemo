@@ -29,18 +29,28 @@ public class MarineAgentManager : MonoBehaviour
     public AgentState CurrentState { get; private set; } = AgentState.Idle;
     public string LastTranscript { get; private set; } = string.Empty;
     public string LastResponse { get; private set; } = string.Empty;
-    public string CurrentLanguageCode => apiConfig != null ? apiConfig.deepgramSTTLanguage : "de";
+    public string CurrentLanguageCode => apiConfig != null
+        ? ApiConfig.NormalizeLanguageCode(apiConfig.deepgramSTTLanguage)
+        : ApiConfig.EnglishLanguageCode;
 
     private bool isRunning;
     private float lastPipelineStartTime = -999f;
     private const float PipelineCooldownSeconds = 0.5f;
     private bool speechWorkerRunning;
+    private bool speechInputComplete;
+    private readonly Queue<string> pendingSpeechChunks = new Queue<string>();
+    private readonly StringBuilder pendingSpeechText = new StringBuilder();
 
     private void Awake()
     {
         if (apiConfig == null)
         {
             apiConfig = Resources.Load<ApiConfig>("ApiConfig");
+        }
+
+        if (apiConfig != null)
+        {
+            apiConfig.ApplyLanguage(apiConfig.deepgramSTTLanguage);
         }
 
         if (stt == null)
@@ -168,7 +178,7 @@ public class MarineAgentManager : MonoBehaviour
         lastPipelineStartTime = Time.unscaledTime;
         LastTranscript = string.Empty;
         LastResponse = string.Empty;
-        speechWorkerRunning = false;
+        ResetSpeechQueue();
 
         SetState(AgentState.Listening);
         yield return StartCoroutine(stt.RecordAndTranscribe(8f));
@@ -190,7 +200,17 @@ public class MarineAgentManager : MonoBehaviour
         }
 
         SetState(AgentState.Thinking);
+        speechWorkerRunning = true;
+        StartCoroutine(SpeakQueuedResponseChunks());
+
         yield return StartCoroutine(gemini.SendChatMessage(LastTranscript));
+        FlushPendingSpeechText();
+        speechInputComplete = true;
+
+        while (speechWorkerRunning)
+        {
+            yield return null;
+        }
 
         if (gemini == null || gemini.HasError)
         {
@@ -209,9 +229,6 @@ public class MarineAgentManager : MonoBehaviour
             isRunning = false;
             yield break;
         }
-
-        SetState(AgentState.Speaking);
-        yield return StartCoroutine(tts.SpeakText(LastResponse));
 
         if (tts != null && tts.HasError)
         {
@@ -238,14 +255,125 @@ public class MarineAgentManager : MonoBehaviour
 
     private void HandleGeminiResponseDelta(string delta)
     {
-        if (string.IsNullOrWhiteSpace(delta))
+        if (string.IsNullOrEmpty(delta))
         {
             return;
         }
 
         LastResponse += delta;
+        QueueSpeechDelta(delta);
         OnResponseChanged?.Invoke(LastResponse);
         uiManager?.SetResponseText(LastResponse);
+    }
+
+    private IEnumerator SpeakQueuedResponseChunks()
+    {
+        while (!speechInputComplete || pendingSpeechChunks.Count > 0)
+        {
+            if (pendingSpeechChunks.Count == 0)
+            {
+                yield return null;
+                continue;
+            }
+
+            string chunk = pendingSpeechChunks.Dequeue();
+            if (string.IsNullOrWhiteSpace(chunk))
+            {
+                continue;
+            }
+
+            SetState(AgentState.Speaking);
+            yield return StartCoroutine(tts.SpeakText(chunk));
+
+            if (tts != null && tts.HasError)
+            {
+                break;
+            }
+        }
+
+        speechWorkerRunning = false;
+    }
+
+    private void ResetSpeechQueue()
+    {
+        pendingSpeechChunks.Clear();
+        pendingSpeechText.Length = 0;
+        speechInputComplete = false;
+        speechWorkerRunning = false;
+    }
+
+    private void QueueSpeechDelta(string delta)
+    {
+        pendingSpeechText.Append(delta);
+
+        while (TryTakeSpeechChunk(out string chunk))
+        {
+            pendingSpeechChunks.Enqueue(chunk);
+        }
+    }
+
+    private void FlushPendingSpeechText()
+    {
+        string text = pendingSpeechText.ToString().Trim();
+        pendingSpeechText.Length = 0;
+
+        if (!string.IsNullOrWhiteSpace(text))
+        {
+            pendingSpeechChunks.Enqueue(text);
+        }
+    }
+
+    private bool TryTakeSpeechChunk(out string chunk)
+    {
+        chunk = string.Empty;
+        string text = pendingSpeechText.ToString();
+
+        int boundary = FindSentenceBoundary(text);
+        if (boundary < 0 && text.Length > 220)
+        {
+            boundary = FindSoftBoundary(text, 180);
+        }
+
+        if (boundary < 0)
+        {
+            return false;
+        }
+
+        chunk = text.Substring(0, boundary + 1).Trim();
+        pendingSpeechText.Remove(0, boundary + 1);
+        return !string.IsNullOrWhiteSpace(chunk);
+    }
+
+    private static int FindSentenceBoundary(string text)
+    {
+        for (int i = 35; i < text.Length; i++)
+        {
+            char c = text[i];
+            bool sentenceEnd = c == '.' || c == '!' || c == '?' || c == '\n';
+            bool followedByBreak = i == text.Length - 1 || char.IsWhiteSpace(text[i + 1]);
+
+            if (sentenceEnd && followedByBreak)
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    private static int FindSoftBoundary(string text, int preferredMaxLength)
+    {
+        int max = Mathf.Min(preferredMaxLength, text.Length - 1);
+        for (int i = max; i >= 60; i--)
+        {
+            char c = text[i];
+            if (c == ',' || c == ';' || char.IsWhiteSpace(c))
+            {
+                return i;
+            }
+        }
+
+        return max;
     }
 
     private void HandlePlaybackComplete()

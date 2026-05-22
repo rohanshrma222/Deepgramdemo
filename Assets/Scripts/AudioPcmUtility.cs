@@ -3,6 +3,51 @@ using UnityEngine;
 
 public static class AudioPcmUtility
 {
+    public static byte[] ConvertFloatSamplesToPcm16(float[] samples, int frameCount, int channels, int sourceSampleRate, int targetSampleRate)
+    {
+        if (samples == null || samples.Length == 0 || frameCount <= 0)
+        {
+            return Array.Empty<byte>();
+        }
+
+        channels = Mathf.Max(1, channels);
+        sourceSampleRate = Mathf.Max(1, sourceSampleRate);
+        targetSampleRate = Mathf.Max(1, targetSampleRate);
+
+        if (sourceSampleRate == targetSampleRate)
+        {
+            return ConvertFloatSamplesToPcm16(samples, frameCount, channels);
+        }
+
+        int sourceFrames = Mathf.Min(frameCount, samples.Length / channels);
+        int targetFrames = Mathf.Max(1, Mathf.RoundToInt(sourceFrames * (targetSampleRate / (float)sourceSampleRate)));
+        byte[] bytes = new byte[targetFrames * sizeof(short)];
+
+        for (int frame = 0; frame < targetFrames; frame++)
+        {
+            float sourcePosition = frame * (sourceFrames - 1f) / Mathf.Max(1, targetFrames - 1);
+            int leftFrame = Mathf.Clamp(Mathf.FloorToInt(sourcePosition), 0, sourceFrames - 1);
+            int rightFrame = Mathf.Clamp(leftFrame + 1, 0, sourceFrames - 1);
+            float t = sourcePosition - leftFrame;
+
+            float monoSample = 0f;
+            for (int channel = 0; channel < channels; channel++)
+            {
+                float left = samples[leftFrame * channels + channel];
+                float right = samples[rightFrame * channels + channel];
+                monoSample += Mathf.Lerp(left, right, t);
+            }
+
+            monoSample /= channels;
+            short intSample = (short)Mathf.Clamp(monoSample * short.MaxValue, short.MinValue, short.MaxValue);
+            int byteIndex = frame * sizeof(short);
+            bytes[byteIndex] = (byte)(intSample & 0xFF);
+            bytes[byteIndex + 1] = (byte)((intSample >> 8) & 0xFF);
+        }
+
+        return bytes;
+    }
+
     public static byte[] ConvertFloatSamplesToPcm16(float[] samples, int frameCount, int channels)
     {
         if (samples == null || samples.Length == 0 || frameCount <= 0)

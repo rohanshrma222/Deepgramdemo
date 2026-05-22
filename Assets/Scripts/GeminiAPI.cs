@@ -38,7 +38,7 @@ public class GeminiAPI : MonoBehaviour
     public string LastResponse { get; private set; } = string.Empty;
     public string LastError { get; private set; } = string.Empty;
     public bool HasError { get; private set; }
-    public string ResponseLanguageCode { get; private set; } = "de";
+    public string ResponseLanguageCode { get; private set; } = ApiConfig.EnglishLanguageCode;
 
     private void Awake()
     {
@@ -55,8 +55,7 @@ public class GeminiAPI : MonoBehaviour
 
     public void SetResponseLanguage(string languageCode)
     {
-        string normalizedCode = string.IsNullOrWhiteSpace(languageCode) ? "de" : languageCode.Trim().ToLowerInvariant();
-        ResponseLanguageCode = normalizedCode;
+        ResponseLanguageCode = ApiConfig.NormalizeLanguageCode(languageCode);
     }
 
     public void ClearConversation()
@@ -93,7 +92,7 @@ public class GeminiAPI : MonoBehaviour
             parts = new List<GeminiPart> { new GeminiPart { text = userMessage } }
         });
 
-        string languageInstruction = ResponseLanguageCode == "de"
+        string languageInstruction = ResponseLanguageCode == ApiConfig.GermanLanguageCode
             ? "Reply in German. Use German for all answers unless the user explicitly asks for another language."
             : "Reply in English. Use English for all answers unless the user explicitly asks for another language.";
 
@@ -118,15 +117,17 @@ public class GeminiAPI : MonoBehaviour
             }
         };
 
-        string url = $"https://generativelanguage.googleapis.com/v1beta/models/{UnityWebRequest.EscapeURL(apiConfig.geminiModel)}:generateContent?key={UnityWebRequest.EscapeURL(apiConfig.geminiApiKey)}";
+        string url = string.Format(GeminiStreamUrlTemplate, UnityWebRequest.EscapeURL(apiConfig.geminiModel))
+            + $"&key={UnityWebRequest.EscapeURL(apiConfig.geminiApiKey)}";
         byte[] payload = System.Text.Encoding.UTF8.GetBytes(body.ToString(Formatting.None));
 
         using (UnityWebRequest request = new UnityWebRequest(url, UnityWebRequest.kHttpVerbPOST))
         {
             request.uploadHandler = new UploadHandlerRaw(payload);
-            request.downloadHandler = new DownloadHandlerBuffer();
+            request.downloadHandler = new GeminiStreamDownloadHandler(HandleStreamChunk, HandleStreamError);
             request.uploadHandler.contentType = "application/json";
             request.SetRequestHeader("Content-Type", "application/json");
+            request.SetRequestHeader("Accept", "text/event-stream");
 
             yield return request.SendWebRequest();
 
@@ -138,16 +139,9 @@ public class GeminiAPI : MonoBehaviour
                 yield break;
             }
 
-            try
-            {
-                JObject json = JObject.Parse(request.downloadHandler.text);
-                string responseText = json["candidates"]?[0]?["content"]?["parts"]?[0]?["text"]?.ToString();
-                LastResponse = responseText?.Trim() ?? string.Empty;
-            }
-            catch (Exception ex)
+            if (!string.IsNullOrWhiteSpace(LastError))
             {
                 HasError = true;
-                LastError = $"Gemini response parse error: {ex.Message}";
                 Debug.LogError(LastError);
                 yield break;
             }
@@ -173,5 +167,117 @@ public class GeminiAPI : MonoBehaviour
         });
 
         OnResponseReceived?.Invoke(LastResponse);
+    }
+
+    private void HandleStreamChunk(string delta)
+    {
+        if (string.IsNullOrEmpty(delta))
+        {
+            return;
+        }
+
+        LastResponse += delta;
+        OnResponseDeltaReceived?.Invoke(delta);
+    }
+
+    private void HandleStreamError(string error)
+    {
+        if (!string.IsNullOrWhiteSpace(error))
+        {
+            LastError = $"Gemini stream error: {error}";
+        }
+    }
+
+    private sealed class GeminiStreamDownloadHandler : DownloadHandlerScript
+    {
+        private readonly Action<string> onDelta;
+        private readonly Action<string> onError;
+        private readonly StringBuilder pendingText = new StringBuilder();
+
+        public GeminiStreamDownloadHandler(Action<string> onDelta, Action<string> onError)
+            : base(new byte[4096])
+        {
+            this.onDelta = onDelta;
+            this.onError = onError;
+        }
+
+        protected override bool ReceiveData(byte[] data, int dataLength)
+        {
+            if (data == null || dataLength <= 0)
+            {
+                return true;
+            }
+
+            pendingText.Append(Encoding.UTF8.GetString(data, 0, dataLength));
+            ProcessPendingEvents();
+            return true;
+        }
+
+        protected override void CompleteContent()
+        {
+            ProcessPendingEvents(true);
+        }
+
+        private void ProcessPendingEvents(bool flush = false)
+        {
+            string text = pendingText.ToString().Replace("\r\n", "\n");
+            int separatorIndex;
+
+            while ((separatorIndex = text.IndexOf("\n\n", StringComparison.Ordinal)) >= 0)
+            {
+                string eventText = text.Substring(0, separatorIndex);
+                ProcessEvent(eventText);
+                text = text.Substring(separatorIndex + 2);
+            }
+
+            if (flush && !string.IsNullOrWhiteSpace(text))
+            {
+                ProcessEvent(text);
+                text = string.Empty;
+            }
+
+            pendingText.Length = 0;
+            pendingText.Append(text);
+        }
+
+        private void ProcessEvent(string eventText)
+        {
+            string[] lines = eventText.Split('\n');
+            for (int i = 0; i < lines.Length; i++)
+            {
+                string line = lines[i].Trim();
+                if (!line.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                string jsonText = line.Substring(5).Trim();
+                if (string.IsNullOrWhiteSpace(jsonText) || jsonText == "[DONE]")
+                {
+                    continue;
+                }
+
+                try
+                {
+                    JObject json = JObject.Parse(jsonText);
+                    string error = json["error"]?["message"]?.ToString();
+                    if (!string.IsNullOrWhiteSpace(error))
+                    {
+                        onError?.Invoke(error);
+                        continue;
+                    }
+
+                    string delta = json["candidates"]?[0]?["content"]?["parts"]?[0]?["text"]?.ToString();
+                    if (!string.IsNullOrEmpty(delta))
+                    {
+                        onDelta?.Invoke(delta);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    onError?.Invoke(ex.Message);
+                }
+            }
+        }
     }
 }
